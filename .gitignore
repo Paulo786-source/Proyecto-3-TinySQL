@@ -72,3 +72,7 @@ Testing/
 .vs/
 *.sqlite
 *.json
+
+# Node
+node_modules/
+client/node_modules/
