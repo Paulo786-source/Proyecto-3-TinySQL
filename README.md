@@ -10,7 +10,7 @@ Instituto Tecnológico de Costa Rica
 ## Autores
 
 - Paulo Centeno Flores
-- Dilana [Apellido]
+- Dilana Gamboa Gonzales
 
 ---
 
