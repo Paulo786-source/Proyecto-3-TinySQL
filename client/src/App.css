@@ -1,18 +1,54 @@
-.app {
-    max-width: 900px;
-    margin: 40px auto;
-    padding: 0 20px;
-    font-family: monospace;
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
 }
+
+body {
+    font-family: system-ui, sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    min-height: 100vh;
+}
+
+.app {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 24px 16px;
+}
+
+.app-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid #2a2a4a;
+}
+
+    .app-header h1 {
+        font-size: 24px;
+        color: #a78bfa;
+    }
 
 .db-context {
-    margin-bottom: 16px;
     font-size: 14px;
-    color: var(--text-1, #ccc);
+    color: #9ca3af;
 }
 
+    .db-context strong {
+        color: #a78bfa;
+    }
+
 .no-db {
-    color: #888;
+    color: #6b7280;
+    font-style: italic;
+}
+
+.app-main {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
 }
 
 .editor-section {
@@ -23,75 +59,140 @@
 
 .sql-editor {
     width: 100%;
-    padding: 12px;
-    font-family: monospace;
-    font-size: 14px;
-    background: #1e1e1e;
-    color: #d4d4d4;
-    border: 1px solid #444;
+    height: 160px;
+    background: #0f0f1a;
+    color: #e0e0e0;
+    border: 1px solid #2a2a4a;
     border-radius: 6px;
+    padding: 12px;
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 14px;
     resize: vertical;
-    box-sizing: border-box;
+    outline: none;
 }
 
-.run-btn {
+    .sql-editor:focus {
+        border-color: #a78bfa;
+    }
+
+.execute-btn {
     align-self: flex-end;
-    padding: 8px 24px;
-    font-size: 14px;
-    background: #0e7a4f;
+    background: #7c3aed;
     color: white;
     border: none;
     border-radius: 6px;
+    padding: 10px 28px;
+    font-size: 15px;
     cursor: pointer;
+    transition: background 0.2s;
 }
 
-    .run-btn:hover:not(:disabled) {
-        background: #0f9460;
+    .execute-btn:hover:not(:disabled) {
+        background: #6d28d9;
     }
 
-    .run-btn:disabled {
-        opacity: 0.5;
+    .execute-btn:disabled {
+        background: #4b5563;
         cursor: not-allowed;
     }
 
-.result-section {
-    margin-top: 24px;
+.history-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
 }
 
-.error {
+    .history-section h3 {
+        font-size: 13px;
+        color: #6b7280;
+        margin-bottom: 4px;
+    }
+
+.history-entry {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 13px;
+    gap: 12px;
+}
+
+    .history-entry code {
+        color: #d1d5db;
+        font-family: ui-monospace, Consolas, monospace;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 70%;
+    }
+
+.history-ok {
+    background: #0f2a1a;
+    border: 1px solid #166534;
+}
+
+    .history-ok span {
+        color: #4ade80;
+        white-space: nowrap;
+    }
+
+.history-error {
+    background: #2a0f0f;
+    border: 1px solid #7f1d1d;
+}
+
+    .history-error span {
+        color: #f87171;
+        white-space: nowrap;
+    }
+
+.results-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.error-msg {
+    background: #3b0a0a;
     color: #f87171;
+    border: 1px solid #7f1d1d;
+    border-radius: 6px;
+    padding: 10px 14px;
     font-size: 14px;
 }
 
-.ok {
-    color: #4ade80;
-    font-size: 14px;
+.time-info {
+    font-size: 13px;
+    color: #6b7280;
 }
 
-.time {
-    margin-top: 8px;
-    font-size: 12px;
-    color: #888;
-}
-
-.result-table {
+.results-table {
     width: 100%;
     border-collapse: collapse;
     font-size: 14px;
 }
 
-    .result-table th,
-    .result-table td {
-        padding: 8px 12px;
-        border: 1px solid #444;
+    .results-table th {
+        background: #1e1b4b;
+        color: #a78bfa;
         text-align: left;
+        padding: 8px 12px;
+        border: 1px solid #2a2a4a;
     }
 
-    .result-table th {
-        background: #2a2a2a;
-        color: #ccc;
+    .results-table td {
+        padding: 7px 12px;
+        border: 1px solid #2a2a4a;
+        color: #d1d5db;
     }
 
-    .result-table td {
-        color: #d4d4d4;
+    .results-table tr:nth-child(even) td {
+        background: #0f0f1f;
     }
+
+.no-rows {
+    font-size: 13px;
+    color: #6b7280;
+    font-style: italic;
+}

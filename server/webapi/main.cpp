@@ -3,11 +3,14 @@
 #include "QueryProcessor.h"
 #include "StoredDataManager.h"
 #include <iostream>
-#include <string>
+#include <chrono>
 
 using json = nlohmann::json;
 
-// serializa un QueryResult al JSON que espera el cliente
+// puerto donde escucha el servidor
+static const int SERVER_PORT = 8081;
+
+// serializa un QueryResult al json que espera el cliente
 static std::string buildJsonResponse(const QueryResult& result) {
     json j;
     j["columns"] = result.columns;
@@ -27,7 +30,7 @@ int main() {
     server.Post("/query", [&qp](const httplib::Request& req, httplib::Response& res) {
         res.set_header("Access-Control-Allow-Origin", "*");
 
-        // parsea el body JSON; false = no lanzar excepción si está malformado
+        // parsea el body json; false = no lanzar excepción si está malformado
         auto body = json::parse(req.body, nullptr, false);
         if (body.is_discarded()) {
             QueryResult err;
@@ -41,20 +44,26 @@ int main() {
         std::string sql = body.value("sql", "");
         std::string dbContext = body.value("db_context", "");
 
+        // mide el tiempo real de procesamiento en el servidor
+        auto start = std::chrono::steady_clock::now();
         QueryResult result = qp.execute(sql, dbContext);
+        auto end = std::chrono::steady_clock::now();
+
+        result.time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
         res.set_content(buildJsonResponse(result), "application/json");
         });
 
     // preflight CORS para que React pueda conectarse
-    server.Options("/query", [](const httplib::Request& req, httplib::Response& res) {
+    server.Options("/query", [](const httplib::Request&, httplib::Response& res) {
         res.set_header("Access-Control-Allow-Origin", "*");
         res.set_header("Access-Control-Allow-Methods", "POST, OPTIONS");
         res.set_header("Access-Control-Allow-Headers", "Content-Type");
         res.set_content("", "text/plain");
         });
 
-    std::cout << "TinySQLDb server running on http://localhost:8081" << std::endl;
-    server.listen("localhost", 8081);
+    std::cout << "TinySQLDb server corriendo en http://localhost:" << SERVER_PORT << std::endl;
+    server.listen("localhost", SERVER_PORT);
 
     return 0;
 }
