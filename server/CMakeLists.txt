@@ -4,8 +4,21 @@ project(TinySQLDb VERSION 1.0)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+# ─── Dependencias externas ─────────────────────────────────────────────────
+include(FetchContent)
+
+# nlohmann/json — header-only, se descarga al hacer cmake ..
+FetchContent_Declare(
+    nlohmann_json
+    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp
+    DOWNLOAD_NO_EXTRACT TRUE
+    DOWNLOAD_DIR ${CMAKE_BINARY_DIR}/include
+)
+FetchContent_MakeAvailable(nlohmann_json)
+
 # Directorios de includes compartidos
 include_directories(${CMAKE_SOURCE_DIR}/include)
+include_directories(${CMAKE_BINARY_DIR}/include)
 
 # ─── Stored Data Manager ───────────────────────────────────────────────────
 add_library(storeddatamanager
