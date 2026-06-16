@@ -102,8 +102,9 @@ std::string QueryProcessor::validate(const ASTNode& node, const std::string& dbC
 
 QueryResult QueryProcessor::execute(const std::string& sql, const std::string& dbContext) {
     QueryResult result;
-    result.time_ms = 0;
     result.success = false;
+
+    auto start = std::chrono::steady_clock::now();
 
     ASTNode node;
     try {
@@ -111,24 +112,30 @@ QueryResult QueryProcessor::execute(const std::string& sql, const std::string& d
     }
     catch (const std::exception& e) {
         result.error = std::string("error de sintaxis: ") + e.what();
+        result.time_ms = 0;
         return result;
     }
 
     std::string validationError = validate(node, dbContext);
     if (!validationError.empty()) {
         result.error = validationError;
+        result.time_ms = 0;
         return result;
     }
 
     if (node.type == "CREATE_DB") {
-        return executeCreateDatabase(node);
+        result = executeCreateDatabase(node);
+    }
+    else if (node.type == "SET_DB") {
+        result = executeSetDatabase(node);
+    }
+    else {
+        result.error = "tipo de sentencia no implementado aún: " + node.type;
     }
 
-    if (node.type == "SET_DB") {
-        return executeSetDatabase(node);
-    }
+    auto end = std::chrono::steady_clock::now();
+    result.time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-    result.error = "tipo de sentencia no implementado aún: " + node.type;
     return result;
 }
 

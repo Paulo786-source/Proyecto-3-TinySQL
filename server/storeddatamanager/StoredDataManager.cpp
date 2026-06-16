@@ -13,7 +13,8 @@ bool StoredDataManager::createDatabase(const std::string& dbName) {
 }
 
 bool StoredDataManager::databaseExists(const std::string& dbName) {
-    return false;
+    // verifica si el directorio de la base de datos existe en disco
+    return std::filesystem::is_directory(BASE_PATH + dbName);
 }
 
 std::vector<std::string> StoredDataManager::listDatabases() {
