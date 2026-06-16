@@ -53,8 +53,8 @@ int main() {
         res.set_content("", "text/plain");
         });
 
-    std::cout << "TinySQLDb server running on http://localhost:8080" << std::endl;
-    server.listen("localhost", 8080);
+    std::cout << "TinySQLDb server running on http://localhost:8081" << std::endl;
+    server.listen("localhost", 8081);
 
     return 0;
 }
