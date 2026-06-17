@@ -1,16 +1,15 @@
-#include "QueryProcessor.h"
+#include "queryprocessor.h"
 #include <sstream>
 #include <stdexcept>
 #include <algorithm>
 #include <cctype>
-#include <chrono>
 #include <functional>
 #include <unordered_map>
+#include <set>
 
-// constructor
-QueryProcessor::QueryProcessor(StoredDataManager& sdm) : sdm_(sdm) {}
+// helpers de string
 
-// convierte un string a mayúsculas para parsing case-insensitive
+// convierte a mayusculas para comparar keywords sql
 static std::string toUpper(const std::string& s) {
     std::string result = s;
     for (char& c : result) {
@@ -19,7 +18,7 @@ static std::string toUpper(const std::string& s) {
     return result;
 }
 
-// divide el sql en tokens respetando strings entre comillas simples y dobles
+// divide el sql en tokens, respetando strings entre comillas
 static std::vector<std::string> tokenize(const std::string& sql) {
     std::vector<std::string> tokens;
     std::string current;
@@ -37,15 +36,15 @@ static std::vector<std::string> tokenize(const std::string& sql) {
             inDoubleQuote = !inDoubleQuote;
             current += c;
         }
-        else if ((c == ' ' || c == '\t' || c == '\n') && !inSingleQuote && !inDoubleQuote) {
-            // espacio fuera de comillas termina el token actual
+        else if ((c == ' ' || c == '\t' || c == '\n' || c == '\r')
+            && !inSingleQuote && !inDoubleQuote) {
             if (!current.empty()) {
                 tokens.push_back(current);
                 current.clear();
             }
         }
-        else if ((c == '(' || c == ')' || c == ',' || c == ';') && !inSingleQuote && !inDoubleQuote) {
-            // puntuación fuera de comillas termina el token y se agrega sola
+        else if ((c == '(' || c == ')' || c == ',' || c == ';')
+            && !inSingleQuote && !inDoubleQuote) {
             if (!current.empty()) {
                 tokens.push_back(current);
                 current.clear();
@@ -57,7 +56,6 @@ static std::vector<std::string> tokenize(const std::string& sql) {
         }
     }
 
-    // agrega el último token si quedó algo pendiente
     if (!current.empty()) {
         tokens.push_back(current);
     }
@@ -65,7 +63,7 @@ static std::vector<std::string> tokenize(const std::string& sql) {
     return tokens;
 }
 
-// elimina las comillas simples o dobles que rodean un valor si las tiene
+// quita comillas simples o dobles que rodean un valor literal
 static std::string stripQuotes(const std::string& token) {
     if (token.size() >= 2) {
         char first = token.front();
@@ -77,21 +75,35 @@ static std::string stripQuotes(const std::string& token) {
     return token;
 }
 
+// tipos de columna validos
+static const std::set<std::string> VALID_TYPES = {
+    "INTEGER", "DOUBLE", "VARCHAR", "DATETIME"
+};
+
+// CONSTRUCTOR
+
+QueryProcessor::QueryProcessor(StoredDataManager& sdm) : sdm_(sdm) {}
+
+// PARSE - convierte sql en astnode
+
 ASTNode QueryProcessor::parse(const std::string& sql) {
     std::vector<std::string> tokens = tokenize(sql);
 
     if (tokens.empty()) {
-        throw std::runtime_error("sentencia SQL vacía");
+        throw std::runtime_error("sentencia sql vacia");
     }
 
     std::string keyword = toUpper(tokens[0]);
 
+    // CREATE
+
     if (keyword == "CREATE") {
         if (tokens.size() < 3) {
-            throw std::runtime_error("sintaxis inválida: CREATE requiere tipo y nombre");
+            throw std::runtime_error("sintaxis invalida: create requiere tipo y nombre");
         }
         std::string objectType = toUpper(tokens[1]);
 
+        // CREATE DATABASE
         if (objectType == "DATABASE") {
             ASTNode node;
             node.type = "CREATE_DB";
@@ -100,35 +112,151 @@ ASTNode QueryProcessor::parse(const std::string& sql) {
             node.hasOrderBy = false;
             return node;
         }
-        // otros tipos de CREATE se implementan en fases posteriores
-        throw std::runtime_error("tipo de CREATE no soportado aún: " + tokens[1]);
+
+        // CREATE TABLE
+        if (objectType == "TABLE") {
+            if (tokens.size() < 4) {
+                throw std::runtime_error("create table requiere nombre de tabla");
+            }
+
+            ASTNode node;
+            node.type = "CREATE_TABLE";
+            node.table = tokens[2];
+            node.hasWhere = false;
+            node.hasOrderBy = false;
+
+            // busca el token '(' de apertura
+            size_t i = 3;
+            if (toUpper(tokens[i]) == "AS") {
+                ++i;
+            }
+            if (i >= tokens.size() || tokens[i] != "(") {
+                throw std::runtime_error("create table: se esperaba '(' despues del nombre");
+            }
+            ++i;
+
+            // parsea la lista de columnas
+            while (i < tokens.size() && tokens[i] != ")") {
+                if (tokens[i] == ",") {
+                    ++i;
+                    continue;
+                }
+
+                ColumnDefinition col;
+                col.nullable = true;
+                col.size = 0;
+
+                col.name = tokens[i++];
+
+                if (i >= tokens.size()) {
+                    throw std::runtime_error("definicion de columna incompleta para: " + col.name);
+                }
+
+                col.type = toUpper(tokens[i++]);
+
+                if (VALID_TYPES.find(col.type) == VALID_TYPES.end()) {
+                    throw std::runtime_error("tipo de columna invalido: '" + col.type +
+                        "'. tipos permitidos: INTEGER, DOUBLE, VARCHAR(n), DATETIME");
+                }
+
+                // varchar necesita tamano: varchar(n)
+                if (col.type == "VARCHAR") {
+                    if (i >= tokens.size() || tokens[i] != "(") {
+                        throw std::runtime_error("varchar requiere tamanno: VARCHAR(n)");
+                    }
+                    ++i;
+
+                    if (i >= tokens.size()) {
+                        throw std::runtime_error("varchar requiere un tamanno numerico");
+                    }
+
+                    try {
+                        col.size = std::stoi(tokens[i++]);
+                    }
+                    catch (...) {
+                        throw std::runtime_error("varchar requiere un tamanno numerico valido");
+                    }
+
+                    if (col.size <= 0) {
+                        throw std::runtime_error("el tamanno de varchar debe ser positivo");
+                    }
+
+                    if (i >= tokens.size() || tokens[i] != ")") {
+                        throw std::runtime_error("se esperaba ')' despues del tamanno de varchar");
+                    }
+                    ++i;
+                }
+
+                node.columns.push_back(col);
+            }
+
+            if (node.columns.empty()) {
+                throw std::runtime_error("create table: la tabla debe tener al menos una columna");
+            }
+
+            return node;
+        }
+
+        // CREATE INDEX - fase 3
+        if (objectType == "INDEX") {
+            throw std::runtime_error("create index se implementa en fase 3");
+        }
+
+        throw std::runtime_error("tipo de create no soportado: " + tokens[1]);
     }
+
+    // SET DATABASE
 
     if (keyword == "SET") {
         if (tokens.size() < 3) {
-            throw std::runtime_error("sintaxis inválida: SET DATABASE requiere un nombre");
+            throw std::runtime_error("sintaxis invalida: set database requiere un nombre");
         }
-        std::string objectType = toUpper(tokens[1]);
-
-        if (objectType == "DATABASE") {
-            ASTNode node;
-            node.type = "SET_DB";
-            node.database = tokens[2];
-            node.hasWhere = false;
-            node.hasOrderBy = false;
-            return node;
+        if (toUpper(tokens[1]) != "DATABASE") {
+            throw std::runtime_error("sintaxis set invalida: se esperaba DATABASE");
         }
-        throw std::runtime_error("sintaxis SET inválida: se esperaba DATABASE");
+        ASTNode node;
+        node.type = "SET_DB";
+        node.database = tokens[2];
+        node.hasWhere = false;
+        node.hasOrderBy = false;
+        return node;
     }
 
-    // otras sentencias se implementan en fases posteriores
+    // DROP TABLE
+
+    if (keyword == "DROP") {
+        if (tokens.size() < 3) {
+            throw std::runtime_error("sintaxis invalida: drop table requiere nombre de tabla");
+        }
+        if (toUpper(tokens[1]) != "TABLE") {
+            throw std::runtime_error("drop: solo se soporta drop table");
+        }
+        ASTNode node;
+        node.type = "DROP_TABLE";
+        node.table = tokens[2];
+        node.hasWhere = false;
+        node.hasOrderBy = false;
+        return node;
+    }
+
+    // DML - fase 3
+
+    if (keyword == "INSERT" || keyword == "SELECT" ||
+        keyword == "UPDATE" || keyword == "DELETE") {
+        throw std::runtime_error(keyword + " se implementa en fase 3");
+    }
+
     throw std::runtime_error("sentencia no reconocida: " + tokens[0]);
 }
 
-std::string QueryProcessor::validate(const ASTNode& node, const std::string& dbContext) {
+// VALIDATE - validacion semantica
+
+std::string QueryProcessor::validate(const ASTNode& node,
+    const std::string& dbContext)
+{
     if (node.type == "CREATE_DB") {
         if (node.database.empty()) {
-            return "el nombre de la base de datos no puede estar vacío";
+            return "el nombre de la base de datos no puede estar vacio";
         }
         if (sdm_.databaseExists(node.database)) {
             return "la base de datos '" + node.database + "' ya existe";
@@ -138,7 +266,7 @@ std::string QueryProcessor::validate(const ASTNode& node, const std::string& dbC
 
     if (node.type == "SET_DB") {
         if (node.database.empty()) {
-            return "el nombre de la base de datos no puede estar vacío";
+            return "el nombre de la base de datos no puede estar vacio";
         }
         if (!sdm_.databaseExists(node.database)) {
             return "la base de datos '" + node.database + "' no existe";
@@ -146,15 +274,59 @@ std::string QueryProcessor::validate(const ASTNode& node, const std::string& dbC
         return "";
     }
 
+    if (node.type == "CREATE_TABLE") {
+        if (dbContext.empty()) {
+            return "no hay base de datos activa. use set database primero";
+        }
+        if (!sdm_.databaseExists(dbContext)) {
+            return "la base de datos activa '" + dbContext + "' no existe";
+        }
+        if (node.table.empty()) {
+            return "el nombre de la tabla no puede estar vacio";
+        }
+        if (sdm_.tableExists(dbContext, node.table)) {
+            return "la tabla '" + node.table + "' ya existe en '" + dbContext + "'";
+        }
+        for (const auto& col : node.columns) {
+            if (VALID_TYPES.find(col.type) == VALID_TYPES.end()) {
+                return "tipo de columna invalido: '" + col.type + "'";
+            }
+            if (col.type == "VARCHAR" && col.size <= 0) {
+                return "varchar requiere un tamanno positivo para la columna '" + col.name + "'";
+            }
+        }
+        return "";
+    }
+
+    if (node.type == "DROP_TABLE") {
+        if (dbContext.empty()) {
+            return "no hay base de datos activa. use set database primero";
+        }
+        if (!sdm_.databaseExists(dbContext)) {
+            return "la base de datos activa '" + dbContext + "' no existe";
+        }
+        if (node.table.empty()) {
+            return "el nombre de la tabla no puede estar vacio";
+        }
+        if (!sdm_.tableExists(dbContext, node.table)) {
+            return "la tabla '" + node.table + "' no existe en '" + dbContext + "'";
+        }
+        return "";
+    }
+
     return "";
 }
 
-QueryResult QueryProcessor::execute(const std::string& sql, const std::string& dbContext) {
+// EXECUTE - pipeline principal
+
+QueryResult QueryProcessor::execute(const std::string& sql,
+    const std::string& dbContext)
+{
     QueryResult result;
     result.time_ms = 0;
     result.success = false;
 
-    // paso 1: parseo
+    // parse
     ASTNode node;
     try {
         node = parse(sql);
@@ -164,14 +336,14 @@ QueryResult QueryProcessor::execute(const std::string& sql, const std::string& d
         return result;
     }
 
-    // paso 2: validación semántica
+    // validate
     std::string validationError = validate(node, dbContext);
     if (!validationError.empty()) {
         result.error = validationError;
         return result;
     }
 
-    // paso 3: dispatch al ejecutor correspondiente
+    // dispatch usando command pattern
     using Handler = std::function<QueryResult()>;
     std::unordered_map<std::string, Handler> dispatch = {
         { "CREATE_DB",    [&] { return executeCreateDatabase(node); } },
@@ -190,18 +362,19 @@ QueryResult QueryProcessor::execute(const std::string& sql, const std::string& d
         result = it->second();
     }
     else {
-        result.error = "tipo de sentencia no implementado aún: " + node.type;
+        result.error = "tipo de sentencia no implementado: " + node.type;
     }
 
     return result;
 }
 
+// EJECUTORES - DDL
+
 QueryResult QueryProcessor::executeCreateDatabase(const ASTNode& node) {
     QueryResult result;
     result.time_ms = 0;
 
-    bool ok = sdm_.createDatabase(node.database);
-    if (!ok) {
+    if (!sdm_.createDatabase(node.database)) {
         result.error = "no se pudo crear la base de datos '" + node.database + "'";
         result.success = false;
         return result;
@@ -214,75 +387,104 @@ QueryResult QueryProcessor::executeCreateDatabase(const ASTNode& node) {
 QueryResult QueryProcessor::executeSetDatabase(const ASTNode& node) {
     QueryResult result;
     result.time_ms = 0;
-    // la validación ya confirmó que la base de datos existe
+    // la validacion ya confirmo que la bd existe
     result.success = true;
     return result;
 }
 
-// stubs: se implementan en fases posteriores
-QueryResult QueryProcessor::executeCreateTable(const ASTNode& node, const std::string& dbContext) {
-    (void)node;
-    (void)dbContext;
+// crea la tabla llamando al sdm
+QueryResult QueryProcessor::executeCreateTable(const ASTNode& node,
+    const std::string& dbContext)
+{
     QueryResult result;
-    result.error = "CREATE TABLE se implementa en fase 2";
+    result.time_ms = 0;
+
+    if (!sdm_.createTableFile(dbContext, node.table, node.columns)) {
+        result.error = "no se pudo crear la tabla '" + node.table + "'";
+        result.success = false;
+        return result;
+    }
+
+    result.success = true;
+    return result;
+}
+
+// elimina la tabla solo si esta vacia
+QueryResult QueryProcessor::executeDropTable(const ASTNode& node,
+    const std::string& dbContext)
+{
+    QueryResult result;
+    result.time_ms = 0;
+
+    if (!sdm_.isTableEmpty(dbContext, node.table)) {
+        result.error = "no se puede eliminar la tabla '" + node.table +
+            "': contiene registros. elimine los datos primero";
+        result.success = false;
+        return result;
+    }
+
+    if (!sdm_.dropTable(dbContext, node.table)) {
+        result.error = "no se pudo eliminar la tabla '" + node.table + "'";
+        result.success = false;
+        return result;
+    }
+
+    result.success = true;
+    return result;
+}
+
+// EJECUTORES - DML (STUBS PARA FASE 3)
+
+QueryResult QueryProcessor::executeInsert(const ASTNode& node,
+    const std::string& dbContext)
+{
+    (void)node; (void)dbContext;
+    QueryResult result;
+    result.error = "insert se implementa en fase 3";
     result.success = false;
     return result;
 }
 
-QueryResult QueryProcessor::executeDropTable(const ASTNode& node, const std::string& dbContext) {
-    (void)node;
-    (void)dbContext;
+QueryResult QueryProcessor::executeSelect(const ASTNode& node,
+    const std::string& dbContext)
+{
+    (void)node; (void)dbContext;
     QueryResult result;
-    result.error = "DROP TABLE se implementa en fase 2";
+    result.error = "select se implementa en fase 3";
     result.success = false;
     return result;
 }
 
-QueryResult QueryProcessor::executeInsert(const ASTNode& node, const std::string& dbContext) {
-    (void)node;
-    (void)dbContext;
+QueryResult QueryProcessor::executeUpdate(const ASTNode& node,
+    const std::string& dbContext)
+{
+    (void)node; (void)dbContext;
     QueryResult result;
-    result.error = "INSERT se implementa en fase 3";
+    result.error = "update se implementa en fase 3";
     result.success = false;
     return result;
 }
 
-QueryResult QueryProcessor::executeSelect(const ASTNode& node, const std::string& dbContext) {
-    (void)node;
-    (void)dbContext;
+QueryResult QueryProcessor::executeDelete(const ASTNode& node,
+    const std::string& dbContext)
+{
+    (void)node; (void)dbContext;
     QueryResult result;
-    result.error = "SELECT se implementa en fase 3";
+    result.error = "delete se implementa en fase 3";
     result.success = false;
     return result;
 }
 
-QueryResult QueryProcessor::executeUpdate(const ASTNode& node, const std::string& dbContext) {
-    (void)node;
-    (void)dbContext;
+QueryResult QueryProcessor::executeCreateIndex(const ASTNode& node,
+    const std::string& dbContext)
+{
+    (void)node; (void)dbContext;
     QueryResult result;
-    result.error = "UPDATE se implementa en fase 3";
-    result.success = false;
-    return result;
-}
-
-QueryResult QueryProcessor::executeDelete(const ASTNode& node, const std::string& dbContext) {
-    (void)node;
-    (void)dbContext;
-    QueryResult result;
-    result.error = "DELETE se implementa en fase 3";
-    result.success = false;
-    return result;
-}
-
-QueryResult QueryProcessor::executeCreateIndex(const ASTNode& node, const std::string& dbContext) {
-    (void)node;
-    (void)dbContext;
-    QueryResult result;
-    result.error = "CREATE INDEX se implementa en fase 3";
+    result.error = "create index se implementa en fase 3";
     result.success = false;
     return result;
 }
 
 void QueryProcessor::loadIndexes() {
-    // se implementa en fase 3 cuando existan índices que recargar
+    // fase 3
 }
