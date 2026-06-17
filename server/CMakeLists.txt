@@ -23,19 +23,19 @@ include_directories(${CMAKE_BINARY_DIR}/include)
 # ─── Stored Data Manager ───────────────────────────────────────────────────
 add_library(storeddatamanager
     storeddatamanager/StoredDataManager.cpp
-)
+ "storeddatamanager/SystemCatalog.cpp")
 target_include_directories(storeddatamanager PUBLIC include)
 
 # ─── Query Processor ───────────────────────────────────────────────────────
 add_library(queryprocessor
     queryprocessor/QueryProcessor.cpp
-)
+ "storeddatamanager/SystemCatalog.cpp")
 target_include_directories(queryprocessor PUBLIC include)
 target_link_libraries(queryprocessor storeddatamanager)
 
 # ─── Web API ───────────────────────────────────────────────────────────────
 add_executable(webapi
     webapi/main.cpp
-)
+ "storeddatamanager/SystemCatalog.cpp")
 target_include_directories(webapi PUBLIC include)
 target_link_libraries(webapi queryprocessor storeddatamanager)
