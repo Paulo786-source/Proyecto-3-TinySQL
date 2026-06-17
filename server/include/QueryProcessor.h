@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include "storeddatamanager.h"
+#include "indexmanager.h"
 
 // estructuras de datos
 
@@ -117,5 +118,6 @@ public:
 
 private:
     StoredDataManager& sdm_;
+    IndexManager indexMgr_;
     std::string currentDatabase_;
 };

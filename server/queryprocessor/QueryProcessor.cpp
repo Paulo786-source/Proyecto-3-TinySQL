@@ -1,490 +1,484 @@
 #include "queryprocessor.h"
-#include <sstream>
-#include <stdexcept>
-#include <algorithm>
-#include <cctype>
+#include "sqlparser.h"
+#include "queryvalidator.h"
+#include "typesystem.h"
+#include "rowutils.h"
 #include <functional>
 #include <unordered_map>
 #include <set>
 
-// helpers de string
+// helper local
 
-// convierte a mayusculas para comparar keywords sql
-static std::string toUpper(const std::string& s) {
-    std::string result = s;
-    for (char& c : result) {
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    }
-    return result;
+static std::string toLowerQP(const std::string& s) {
+    std::string r = s;
+    for (char& c : r)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return r;
 }
 
-// divide el sql en tokens, respetando strings entre comillas
-static std::vector<std::string> tokenize(const std::string& sql) {
-    std::vector<std::string> tokens;
-    std::string current;
-    bool inSingleQuote = false;
-    bool inDoubleQuote = false;
-
-    for (size_t i = 0; i < sql.size(); i++) {
-        char c = sql[i];
-
-        if (c == '\'' && !inDoubleQuote) {
-            inSingleQuote = !inSingleQuote;
-            current += c;
-        }
-        else if (c == '"' && !inSingleQuote) {
-            inDoubleQuote = !inDoubleQuote;
-            current += c;
-        }
-        else if ((c == ' ' || c == '\t' || c == '\n' || c == '\r')
-            && !inSingleQuote && !inDoubleQuote) {
-            if (!current.empty()) {
-                tokens.push_back(current);
-                current.clear();
-            }
-        }
-        else if ((c == '(' || c == ')' || c == ',' || c == ';')
-            && !inSingleQuote && !inDoubleQuote) {
-            if (!current.empty()) {
-                tokens.push_back(current);
-                current.clear();
-            }
-            tokens.push_back(std::string(1, c));
-        }
-        else {
-            current += c;
-        }
-    }
-
-    if (!current.empty()) {
-        tokens.push_back(current);
-    }
-
-    return tokens;
-}
-
-// quita comillas simples o dobles que rodean un valor literal
-static std::string stripQuotes(const std::string& token) {
-    if (token.size() >= 2) {
-        char first = token.front();
-        char last = token.back();
-        if ((first == '\'' && last == '\'') || (first == '"' && last == '"')) {
-            return token.substr(1, token.size() - 2);
-        }
-    }
-    return token;
-}
-
-// tipos de columna validos
-static const std::set<std::string> VALID_TYPES = {
-    "INTEGER", "DOUBLE", "VARCHAR", "DATETIME"
-};
-
+// =============================================================================
 // CONSTRUCTOR
+// =============================================================================
 
 QueryProcessor::QueryProcessor(StoredDataManager& sdm) : sdm_(sdm) {}
 
-// PARSE - convierte sql en astnode
-
-ASTNode QueryProcessor::parse(const std::string& sql) {
-    std::vector<std::string> tokens = tokenize(sql);
-
-    if (tokens.empty()) {
-        throw std::runtime_error("sentencia sql vacia");
-    }
-
-    std::string keyword = toUpper(tokens[0]);
-
-    // CREATE
-
-    if (keyword == "CREATE") {
-        if (tokens.size() < 3) {
-            throw std::runtime_error("sintaxis invalida: create requiere tipo y nombre");
-        }
-        std::string objectType = toUpper(tokens[1]);
-
-        // CREATE DATABASE
-        if (objectType == "DATABASE") {
-            ASTNode node;
-            node.type = "CREATE_DB";
-            node.database = tokens[2];
-            node.hasWhere = false;
-            node.hasOrderBy = false;
-            return node;
-        }
-
-        // CREATE TABLE
-        if (objectType == "TABLE") {
-            if (tokens.size() < 4) {
-                throw std::runtime_error("create table requiere nombre de tabla");
-            }
-
-            ASTNode node;
-            node.type = "CREATE_TABLE";
-            node.table = tokens[2];
-            node.hasWhere = false;
-            node.hasOrderBy = false;
-
-            // busca el token '(' de apertura
-            size_t i = 3;
-            if (toUpper(tokens[i]) == "AS") {
-                ++i;
-            }
-            if (i >= tokens.size() || tokens[i] != "(") {
-                throw std::runtime_error("create table: se esperaba '(' despues del nombre");
-            }
-            ++i;
-
-            // parsea la lista de columnas
-            while (i < tokens.size() && tokens[i] != ")") {
-                if (tokens[i] == ",") {
-                    ++i;
-                    continue;
-                }
-
-                ColumnDefinition col;
-                col.nullable = true;
-                col.size = 0;
-
-                col.name = tokens[i++];
-
-                if (i >= tokens.size()) {
-                    throw std::runtime_error("definicion de columna incompleta para: " + col.name);
-                }
-
-                col.type = toUpper(tokens[i++]);
-
-                if (VALID_TYPES.find(col.type) == VALID_TYPES.end()) {
-                    throw std::runtime_error("tipo de columna invalido: '" + col.type +
-                        "'. tipos permitidos: INTEGER, DOUBLE, VARCHAR(n), DATETIME");
-                }
-
-                // varchar necesita tamano: varchar(n)
-                if (col.type == "VARCHAR") {
-                    if (i >= tokens.size() || tokens[i] != "(") {
-                        throw std::runtime_error("varchar requiere tamanno: VARCHAR(n)");
-                    }
-                    ++i;
-
-                    if (i >= tokens.size()) {
-                        throw std::runtime_error("varchar requiere un tamanno numerico");
-                    }
-
-                    try {
-                        col.size = std::stoi(tokens[i++]);
-                    }
-                    catch (...) {
-                        throw std::runtime_error("varchar requiere un tamanno numerico valido");
-                    }
-
-                    if (col.size <= 0) {
-                        throw std::runtime_error("el tamanno de varchar debe ser positivo");
-                    }
-
-                    if (i >= tokens.size() || tokens[i] != ")") {
-                        throw std::runtime_error("se esperaba ')' despues del tamanno de varchar");
-                    }
-                    ++i;
-                }
-
-                node.columns.push_back(col);
-            }
-
-            if (node.columns.empty()) {
-                throw std::runtime_error("create table: la tabla debe tener al menos una columna");
-            }
-
-            return node;
-        }
-
-        // CREATE INDEX - fase 3
-        if (objectType == "INDEX") {
-            throw std::runtime_error("create index se implementa en fase 3");
-        }
-
-        throw std::runtime_error("tipo de create no soportado: " + tokens[1]);
-    }
-
-    // SET DATABASE
-
-    if (keyword == "SET") {
-        if (tokens.size() < 3) {
-            throw std::runtime_error("sintaxis invalida: set database requiere un nombre");
-        }
-        if (toUpper(tokens[1]) != "DATABASE") {
-            throw std::runtime_error("sintaxis set invalida: se esperaba DATABASE");
-        }
-        ASTNode node;
-        node.type = "SET_DB";
-        node.database = tokens[2];
-        node.hasWhere = false;
-        node.hasOrderBy = false;
-        return node;
-    }
-
-    // DROP TABLE
-
-    if (keyword == "DROP") {
-        if (tokens.size() < 3) {
-            throw std::runtime_error("sintaxis invalida: drop table requiere nombre de tabla");
-        }
-        if (toUpper(tokens[1]) != "TABLE") {
-            throw std::runtime_error("drop: solo se soporta drop table");
-        }
-        ASTNode node;
-        node.type = "DROP_TABLE";
-        node.table = tokens[2];
-        node.hasWhere = false;
-        node.hasOrderBy = false;
-        return node;
-    }
-
-    // DML - fase 3
-
-    if (keyword == "INSERT" || keyword == "SELECT" ||
-        keyword == "UPDATE" || keyword == "DELETE") {
-        throw std::runtime_error(keyword + " se implementa en fase 3");
-    }
-
-    throw std::runtime_error("sentencia no reconocida: " + tokens[0]);
-}
-
-// VALIDATE - validacion semantica
-
-std::string QueryProcessor::validate(const ASTNode& node,
-    const std::string& dbContext)
-{
-    if (node.type == "CREATE_DB") {
-        if (node.database.empty()) {
-            return "el nombre de la base de datos no puede estar vacio";
-        }
-        if (sdm_.databaseExists(node.database)) {
-            return "la base de datos '" + node.database + "' ya existe";
-        }
-        return "";
-    }
-
-    if (node.type == "SET_DB") {
-        if (node.database.empty()) {
-            return "el nombre de la base de datos no puede estar vacio";
-        }
-        if (!sdm_.databaseExists(node.database)) {
-            return "la base de datos '" + node.database + "' no existe";
-        }
-        return "";
-    }
-
-    if (node.type == "CREATE_TABLE") {
-        if (dbContext.empty()) {
-            return "no hay base de datos activa. use set database primero";
-        }
-        if (!sdm_.databaseExists(dbContext)) {
-            return "la base de datos activa '" + dbContext + "' no existe";
-        }
-        if (node.table.empty()) {
-            return "el nombre de la tabla no puede estar vacio";
-        }
-        if (sdm_.tableExists(dbContext, node.table)) {
-            return "la tabla '" + node.table + "' ya existe en '" + dbContext + "'";
-        }
-        for (const auto& col : node.columns) {
-            if (VALID_TYPES.find(col.type) == VALID_TYPES.end()) {
-                return "tipo de columna invalido: '" + col.type + "'";
-            }
-            if (col.type == "VARCHAR" && col.size <= 0) {
-                return "varchar requiere un tamanno positivo para la columna '" + col.name + "'";
-            }
-        }
-        return "";
-    }
-
-    if (node.type == "DROP_TABLE") {
-        if (dbContext.empty()) {
-            return "no hay base de datos activa. use set database primero";
-        }
-        if (!sdm_.databaseExists(dbContext)) {
-            return "la base de datos activa '" + dbContext + "' no existe";
-        }
-        if (node.table.empty()) {
-            return "el nombre de la tabla no puede estar vacio";
-        }
-        if (!sdm_.tableExists(dbContext, node.table)) {
-            return "la tabla '" + node.table + "' no existe en '" + dbContext + "'";
-        }
-        return "";
-    }
-
-    return "";
-}
-
-// EXECUTE - pipeline principal
+// =============================================================================
+// EXECUTE - PIPELINE PRINCIPAL
+// =============================================================================
 
 QueryResult QueryProcessor::execute(const std::string& sql,
-    const std::string& dbContext)
+    const std::string& db)
 {
     QueryResult result;
-    result.time_ms = 0;
-    result.success = false;
 
-    // parse
+    // paso 1: parseo
     ASTNode node;
     try {
-        node = parse(sql);
+        SQLParser parser;
+        node = parser.parse(sql);
     }
     catch (const std::exception& e) {
         result.error = std::string("error de sintaxis: ") + e.what();
         return result;
     }
 
-    // validate
-    std::string validationError = validate(node, dbContext);
-    if (!validationError.empty()) {
-        result.error = validationError;
+    // paso 2: validacion semantica
+    QueryValidator validator(sdm_, indexMgr_);
+    std::string valErr = validator.validate(node, db);
+    if (!valErr.empty()) {
+        result.error = valErr;
         return result;
     }
 
-    // dispatch usando command pattern
+    // paso 3: despacho (command pattern)
     using Handler = std::function<QueryResult()>;
     std::unordered_map<std::string, Handler> dispatch = {
         { "CREATE_DB",    [&] { return executeCreateDatabase(node); } },
         { "SET_DB",       [&] { return executeSetDatabase(node); } },
-        { "CREATE_TABLE", [&] { return executeCreateTable(node, dbContext); } },
-        { "DROP_TABLE",   [&] { return executeDropTable(node, dbContext); } },
-        { "INSERT",       [&] { return executeInsert(node, dbContext); } },
-        { "SELECT",       [&] { return executeSelect(node, dbContext); } },
-        { "UPDATE",       [&] { return executeUpdate(node, dbContext); } },
-        { "DELETE",       [&] { return executeDelete(node, dbContext); } },
-        { "CREATE_INDEX", [&] { return executeCreateIndex(node, dbContext); } },
+        { "CREATE_TABLE", [&] { return executeCreateTable(node, db); } },
+        { "DROP_TABLE",   [&] { return executeDropTable(node, db); } },
+        { "INSERT",       [&] { return executeInsert(node, db); } },
+        { "SELECT",       [&] { return executeSelect(node, db); } },
+        { "UPDATE",       [&] { return executeUpdate(node, db); } },
+        { "DELETE",       [&] { return executeDelete(node, db); } },
+        { "CREATE_INDEX", [&] { return executeCreateIndex(node, db); } },
     };
 
     auto it = dispatch.find(node.type);
-    if (it != dispatch.end()) {
-        result = it->second();
-    }
-    else {
-        result.error = "tipo de sentencia no implementado: " + node.type;
-    }
+    if (it != dispatch.end()) return it->second();
 
+    result.error = "tipo de sentencia no implementado: " + node.type;
     return result;
 }
 
-// EJECUTORES - DDL
+// metodos publicos que delegan al parser/validator (para tests)
+
+ASTNode QueryProcessor::parse(const std::string& sql) {
+    SQLParser p; return p.parse(sql);
+}
+
+std::string QueryProcessor::validate(const ASTNode& node, const std::string& db) {
+    QueryValidator v(sdm_, indexMgr_); return v.validate(node, db);
+}
+
+// =============================================================================
+// EJECUTORES DDL
+// =============================================================================
 
 QueryResult QueryProcessor::executeCreateDatabase(const ASTNode& node) {
-    QueryResult result;
-    result.time_ms = 0;
-
+    QueryResult r;
     if (!sdm_.createDatabase(node.database)) {
-        result.error = "no se pudo crear la base de datos '" + node.database + "'";
-        result.success = false;
-        return result;
+        r.error = "no se pudo crear la base de datos '" + node.database + "'";
+        return r;
     }
-
-    result.success = true;
-    return result;
+    r.success = true;
+    return r;
 }
 
-QueryResult QueryProcessor::executeSetDatabase(const ASTNode& node) {
-    QueryResult result;
-    result.time_ms = 0;
-    // la validacion ya confirmo que la bd existe
-    result.success = true;
-    return result;
+QueryResult QueryProcessor::executeSetDatabase(const ASTNode&) {
+    QueryResult r; r.success = true; return r;
 }
 
-// crea la tabla llamando al sdm
 QueryResult QueryProcessor::executeCreateTable(const ASTNode& node,
-    const std::string& dbContext)
+    const std::string& db)
 {
-    QueryResult result;
-    result.time_ms = 0;
-
-    if (!sdm_.createTableFile(dbContext, node.table, node.columns)) {
-        result.error = "no se pudo crear la tabla '" + node.table + "'";
-        result.success = false;
-        return result;
+    QueryResult r;
+    if (!sdm_.createTableFile(db, node.table, node.columns)) {
+        r.error = "no se pudo crear la tabla '" + node.table + "'";
+        return r;
     }
-
-    result.success = true;
-    return result;
+    r.success = true;
+    return r;
 }
 
-// elimina la tabla solo si esta vacia
 QueryResult QueryProcessor::executeDropTable(const ASTNode& node,
-    const std::string& dbContext)
+    const std::string& db)
 {
-    QueryResult result;
-    result.time_ms = 0;
-
-    if (!sdm_.isTableEmpty(dbContext, node.table)) {
-        result.error = "no se puede eliminar la tabla '" + node.table +
+    QueryResult r;
+    if (!sdm_.isTableEmpty(db, node.table)) {
+        r.error = "no se puede eliminar '" + node.table +
             "': contiene registros. elimine los datos primero";
-        result.success = false;
-        return result;
+        return r;
     }
+    // limpia el indice en memoria si existia
+    std::string idxCol = indexMgr_.getIndexedColumn(db, node.table);
+    if (!idxCol.empty()) indexMgr_.remove(db, node.table, idxCol);
 
-    if (!sdm_.dropTable(dbContext, node.table)) {
-        result.error = "no se pudo eliminar la tabla '" + node.table + "'";
-        result.success = false;
-        return result;
+    if (!sdm_.dropTable(db, node.table)) {
+        r.error = "no se pudo eliminar la tabla '" + node.table + "'";
+        return r;
     }
-
-    result.success = true;
-    return result;
+    r.success = true;
+    return r;
 }
 
-// EJECUTORES - DML (STUBS PARA FASE 3)
+// =============================================================================
+// EXECUTE INSERT
+// =============================================================================
 
 QueryResult QueryProcessor::executeInsert(const ASTNode& node,
-    const std::string& dbContext)
+    const std::string& db)
 {
-    (void)node; (void)dbContext;
-    QueryResult result;
-    result.error = "insert se implementa en fase 3";
-    result.success = false;
-    return result;
+    QueryResult r;
+    auto schema = sdm_.getTableSchema(db, node.table);
+
+    // normaliza datetime a timestamp antes de escribir en disco
+    Row normalized;
+    normalized.reserve(schema.size());
+    for (size_t i = 0; i < schema.size(); ++i)
+        normalized.push_back(TypeSystem::normalizeValue(node.values[i], schema[i]));
+
+    // verifica duplicado en indice antes de escribir (no deja registros huerfanos)
+    std::string idxCol = indexMgr_.getIndexedColumn(db, node.table);
+    IndexHandle* idx = nullptr;
+    int idxColPos = -1;
+    if (!idxCol.empty()) {
+        idx = indexMgr_.get(db, node.table, idxCol);
+        for (int i = 0; i < static_cast<int>(schema.size()); ++i) {
+            if (toLowerQP(schema[i].name) == toLowerQP(idxCol)) {
+                idxColPos = i; break;
+            }
+        }
+        if (idx && idxColPos >= 0 && idx->search(normalized[idxColPos]) >= 0) {
+            r.error = "valor duplicado en columna indexada '" + idxCol +
+                "': " + node.values[idxColPos] + " ya existe";
+            return r;
+        }
+    }
+
+    // escribe en disco
+    long long offset = sdm_.appendRecord(db, node.table, normalized);
+    if (offset < 0) {
+        r.error = "no se pudo insertar el registro en '" + node.table + "'";
+        return r;
+    }
+
+    // actualiza el indice con el offset del nuevo registro
+    if (idx && idxColPos >= 0) {
+        try { idx->insert(normalized[idxColPos], offset); }
+        catch (const std::exception& e) { r.error = e.what(); return r; }
+    }
+
+    r.success = true;
+    return r;
 }
+
+// =============================================================================
+// EXECUTE SELECT
+// =============================================================================
 
 QueryResult QueryProcessor::executeSelect(const ASTNode& node,
-    const std::string& dbContext)
+    const std::string& db)
 {
-    (void)node; (void)dbContext;
-    QueryResult result;
-    result.error = "select se implementa en fase 3";
-    result.success = false;
-    return result;
+    QueryResult r;
+
+    // select sobre tablas del system catalog
+    static const std::unordered_map<std::string, std::vector<std::string>> CAT_COLS = {
+        { "SystemDatabases", { "name" } },
+        { "SystemTables",    { "database", "table" } },
+        { "SystemColumns",   { "database", "table", "column", "type", "size", "nullable" } },
+        { "SystemIndexes",   { "database", "table", "column", "indexName", "indexType" } },
+    };
+    auto catIt = CAT_COLS.find(node.table);
+    if (catIt != CAT_COLS.end()) {
+        r.columns = catIt->second;
+        r.rows = sdm_.readCatalogTable(node.table);
+        r.success = true;
+        return r;
+    }
+
+    auto schema = sdm_.getTableSchema(db, node.table);
+    ResultSet filtered;
+
+    // estrategia de busqueda: indice vs secuencial
+    if (node.hasWhere) {
+        std::string idxCol = indexMgr_.getIndexedColumn(db, node.table);
+        IndexHandle* idx = nullptr;
+
+        // si la columna del WHERE esta indexada y el operador es "=", usa indice
+        if (!idxCol.empty()
+            && toLowerQP(idxCol) == toLowerQP(node.where.column)
+            && node.where.op == "=")
+        {
+            idx = indexMgr_.get(db, node.table, idxCol);
+        }
+
+        if (idx) {
+            // busqueda por indice: O(log n)
+            long long offset = idx->search(node.where.value);
+            if (offset >= 0) {
+                Row row = sdm_.readRecord(db, node.table, offset);
+                if (!row.empty()) filtered.push_back(row);
+            }
+        }
+        else {
+            // busqueda secuencial: O(n)
+            for (auto& row : sdm_.readAllRecords(db, node.table))
+                if (RowUtils::matchesWhere(row, node.where, schema))
+                    filtered.push_back(row);
+        }
+    }
+    else {
+        // sin WHERE: todos los registros
+        filtered = sdm_.readAllRecords(db, node.table);
+    }
+
+    // ORDER BY con quicksort propio
+    if (node.hasOrderBy)
+        RowUtils::sortRows(filtered, node.orderByColumn,
+            node.orderByDirection, schema);
+
+    // proyeccion de columnas
+    bool selectAll = node.selectColumns.empty()
+        || (node.selectColumns.size() == 1
+            && node.selectColumns[0] == "*");
+
+    if (selectAll) {
+        // SELECT *: todas las columnas
+        for (const auto& col : schema) r.columns.push_back(col.name);
+        for (auto& row : filtered) {
+            Row displayed;
+            for (size_t i = 0; i < schema.size() && i < row.size(); ++i)
+                displayed.push_back(TypeSystem::displayValue(row[i], schema[i]));
+            r.rows.push_back(displayed);
+        }
+    }
+    else {
+        // columnas especificas
+        r.columns = node.selectColumns;
+        for (auto& row : filtered) {
+            Row projected;
+            for (const auto& colName : node.selectColumns) {
+                bool pushed = false;
+                for (size_t i = 0; i < schema.size() && i < row.size(); ++i) {
+                    if (toLowerQP(schema[i].name) == toLowerQP(colName)) {
+                        projected.push_back(TypeSystem::displayValue(row[i], schema[i]));
+                        pushed = true; break;
+                    }
+                }
+                if (!pushed) projected.push_back("");
+            }
+            r.rows.push_back(projected);
+        }
+    }
+
+    r.success = true;
+    return r;
 }
+
+// =============================================================================
+// EXECUTE UPDATE
+// =============================================================================
 
 QueryResult QueryProcessor::executeUpdate(const ASTNode& node,
-    const std::string& dbContext)
+    const std::string& db)
 {
-    (void)node; (void)dbContext;
-    QueryResult result;
-    result.error = "update se implementa en fase 3";
-    result.success = false;
-    return result;
+    QueryResult r;
+    auto schema = sdm_.getTableSchema(db, node.table);
+
+    // busca si la tabla tiene un indice
+    std::string idxCol = indexMgr_.getIndexedColumn(db, node.table);
+    IndexHandle* idx = nullptr;
+    int idxColPos = -1;
+    if (!idxCol.empty()) {
+        idx = indexMgr_.get(db, node.table, idxCol);
+        for (int i = 0; i < static_cast<int>(schema.size()); ++i)
+            if (toLowerQP(schema[i].name) == toLowerQP(idxCol)) { idxColPos = i; break; }
+    }
+
+    // localiza las filas a actualizar
+    std::vector<std::pair<long long, Row>> targets;
+    if (node.hasWhere && idx
+        && toLowerQP(idxCol) == toLowerQP(node.where.column)
+        && node.where.op == "=")
+    {
+        // usa el indice: O(log n)
+        long long off = idx->search(node.where.value);
+        if (off >= 0) {
+            Row row = sdm_.readRecord(db, node.table, off);
+            if (!row.empty()) targets.push_back({ off, row });
+        }
+    }
+    else {
+        // sin indice: requiere readAllRecordsWithOffsets() de persona b
+        r.error = "UPDATE sin indice en la columna WHERE requiere "
+            "readAllRecordsWithOffsets() de Persona B";
+        return r;
+    }
+
+    // aplica los cambios a cada fila encontrada
+    int updated = 0;
+    for (auto& [off, row] : targets) {
+        Row newRow = row;
+        for (const auto& sc : node.setClauses) {
+            for (size_t i = 0; i < schema.size(); ++i) {
+                if (toLowerQP(schema[i].name) == toLowerQP(sc.column)) {
+                    std::string norm = TypeSystem::normalizeValue(sc.value, schema[i]);
+
+                    // si actualiza la columna indexada, verifica duplicado
+                    if (idx && static_cast<int>(i) == idxColPos) {
+                        long long existing = idx->search(norm);
+                        if (existing >= 0 && existing != off) {
+                            r.error = "valor duplicado en columna indexada '" + idxCol +
+                                "': " + sc.value + " ya existe";
+                            return r;
+                        }
+                        // actualiza el indice: remueve la clave vieja, inserta la nueva
+                        idx->remove(row[i]);
+                        idx->insert(norm, off);
+                    }
+
+                    newRow[i] = norm;
+                    break;
+                }
+            }
+        }
+        // escribe el registro actualizado en disco
+        if (!sdm_.updateRecord(db, node.table, off, newRow)) {
+            r.error = "no se pudo actualizar un registro en '" + node.table + "'";
+            return r;
+        }
+        ++updated;
+    }
+
+    r.success = true;
+    r.columns = { "rows_updated" };
+    r.rows = { { std::to_string(updated) } };
+    return r;
 }
+
+// =============================================================================
+// EXECUTE DELETE
+// =============================================================================
 
 QueryResult QueryProcessor::executeDelete(const ASTNode& node,
-    const std::string& dbContext)
+    const std::string& db)
 {
-    (void)node; (void)dbContext;
-    QueryResult result;
-    result.error = "delete se implementa en fase 3";
-    result.success = false;
-    return result;
+    QueryResult r;
+    auto schema = sdm_.getTableSchema(db, node.table);
+
+    // busca si la tabla tiene un indice
+    std::string idxCol = indexMgr_.getIndexedColumn(db, node.table);
+    IndexHandle* idx = nullptr;
+    int idxColPos = -1;
+    if (!idxCol.empty()) {
+        idx = indexMgr_.get(db, node.table, idxCol);
+        for (int i = 0; i < static_cast<int>(schema.size()); ++i)
+            if (toLowerQP(schema[i].name) == toLowerQP(idxCol)) { idxColPos = i; break; }
+    }
+
+    // localiza las filas a eliminar
+    std::vector<std::pair<long long, Row>> targets;
+    if (node.hasWhere && idx
+        && toLowerQP(idxCol) == toLowerQP(node.where.column)
+        && node.where.op == "=")
+    {
+        // usa el indice: O(log n)
+        long long off = idx->search(node.where.value);
+        if (off >= 0) {
+            Row row = sdm_.readRecord(db, node.table, off);
+            if (!row.empty()) targets.push_back({ off, row });
+        }
+    }
+    else {
+        // sin indice: requiere readAllRecordsWithOffsets() de persona b
+        r.error = "DELETE sin indice en la columna WHERE requiere "
+            "readAllRecordsWithOffsets() de Persona B";
+        return r;
+    }
+
+    // elimina cada fila encontrada
+    int deleted = 0;
+    for (auto& [off, row] : targets) {
+        // remueve del indice si existe
+        if (idx && idxColPos >= 0) idx->remove(row[idxColPos]);
+        // marca como eliminado en disco
+        if (!sdm_.deleteRecord(db, node.table, off)) {
+            r.error = "no se pudo eliminar un registro en '" + node.table + "'";
+            return r;
+        }
+        ++deleted;
+    }
+
+    r.success = true;
+    r.columns = { "rows_deleted" };
+    r.rows = { { std::to_string(deleted) } };
+    return r;
 }
+
+// =============================================================================
+// EXECUTE CREATE INDEX
+// =============================================================================
 
 QueryResult QueryProcessor::executeCreateIndex(const ASTNode& node,
-    const std::string& dbContext)
+    const std::string& db)
 {
-    (void)node; (void)dbContext;
-    QueryResult result;
-    result.error = "create index se implementa en fase 3";
-    result.success = false;
-    return result;
+    QueryResult r;
+    auto schema = sdm_.getTableSchema(db, node.table);
+
+    // encuentra el tipo de la columna indexada
+    std::string colType = "VARCHAR";
+    for (const auto& col : schema)
+        if (toLowerQP(col.name) == toLowerQP(node.indexColumn)) {
+            colType = col.type; break;
+        }
+
+    // crea el arbol correcto (BST o BTree) via la fabrica de IndexManager
+    auto handle = makeIndexHandle(node.indexType, colType);
+
+    // registra el indice en el catalogo
+    IndexDefinition def;
+    def.indexName = node.indexName;
+    def.tableName = node.table;
+    def.columnName = node.indexColumn;
+    def.type = node.indexType;
+    def.database = db;
+    if (!sdm_.addIndex(def)) {
+        r.error = "no se pudo registrar el indice en el catalogo";
+        return r;
+    }
+
+    // agrega el indice al IndexManager en memoria
+    indexMgr_.add(db, node.table, node.indexColumn, std::move(handle));
+
+    r.success = true;
+    return r;
 }
 
+// =============================================================================
+// LOAD INDEXES
+// =============================================================================
+
 void QueryProcessor::loadIndexes() {
-    // fase 3
+    // lee todos los indices del catalogo y reconstruye los arboles en memoria
+    for (const auto& def : sdm_.loadIndexesOnStartup()) {
+        auto schema = sdm_.getTableSchema(def.database, def.tableName);
+        std::string colType = "VARCHAR";
+        for (const auto& col : schema)
+            if (toLowerQP(col.name) == toLowerQP(def.columnName)) {
+                colType = col.type; break;
+            }
+        indexMgr_.add(def.database, def.tableName, def.columnName,
+            makeIndexHandle(def.type, colType));
+    }
 }

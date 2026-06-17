@@ -4,7 +4,7 @@ project(TinySQLDb VERSION 1.0)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
-# warnings para detectar malas practicas
+# warnings (penaliza malas practicas segun el enunciado)
 if(MSVC)
     add_compile_options(/W4)
 else()
@@ -13,8 +13,6 @@ endif()
 
 # dependencias externas
 include(FetchContent)
-
-# nlohmann/json - header-only, se descarga al hacer cmake ..
 FetchContent_Declare(
     nlohmann_json
     URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp
@@ -23,12 +21,11 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
-# directorios de includes compartidos
 include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${CMAKE_BINARY_DIR}/include)
 
 # STORED DATA MANAGER
-# systemcatalog.cpp se agrega en fase 2
+# systemcatalog.cpp agregado en fase 2
 add_library(storeddatamanager
     storeddatamanager/StoredDataManager.cpp
     storeddatamanager/SystemCatalog.cpp
@@ -36,8 +33,12 @@ add_library(storeddatamanager
 target_include_directories(storeddatamanager PUBLIC include)
 
 # QUERY PROCESSOR
+# fase 3: se agregan sqlparser y queryvalidator como unidades de compilacion
+# typesystem.h y rowutils.h son header-only (solo funciones inline)
 add_library(queryprocessor
     queryprocessor/QueryProcessor.cpp
+    queryprocessor/SQLParser.cpp
+    queryprocessor/QueryValidator.cpp
 )
 target_include_directories(queryprocessor PUBLIC include)
 target_link_libraries(queryprocessor storeddatamanager)
