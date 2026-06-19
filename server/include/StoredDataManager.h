@@ -88,6 +88,12 @@ public:
     ResultSet readAllRecords(const std::string& dbName,
         const std::string& tableName);
 
+    // lee todos los registros activos con sus offsets en disco
+    // usado por UPDATE y DELETE sin indice para localizar registros
+    std::vector<std::pair<long long, Row>> readAllRecordsWithOffsets(
+        const std::string& dbName,
+        const std::string& tableName);
+
     // sobrescribe el registro en la posicion offset
     bool updateRecord(const std::string& dbName,
         const std::string& tableName,

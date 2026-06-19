@@ -25,35 +25,26 @@ struct SetClause {
 // nodo del arbol sintactico (AST)
 // el query processor parsea el sql y produce uno de estos nodos
 struct ASTNode {
-    std::string type;      // CREATE_DB, SET_DB, CREATE_TABLE, DROP_TABLE,
-    // INSERT, SELECT, UPDATE, DELETE, CREATE_INDEX
-
+    std::string type;
     std::string database;
     std::string table;
 
-    // para CREATE TABLE
     std::vector<ColumnDefinition> columns;
-
-    // para INSERT
     std::vector<std::string> values;
 
-    // para SELECT y DELETE
     WhereClause where;
-    bool hasWhere;
+    bool hasWhere = false;      // <-- agregar = false
 
-    // para SELECT
-    std::vector<std::string> selectColumns;  // * para todas
+    std::vector<std::string> selectColumns;
     std::string orderByColumn;
-    std::string orderByDirection;            // ASC o DESC
-    bool hasOrderBy;
+    std::string orderByDirection;
+    bool hasOrderBy = false;    // <-- agregar = false
 
-    // para UPDATE
     std::vector<SetClause> setClauses;
 
-    // para CREATE INDEX
     std::string indexName;
     std::string indexColumn;
-    std::string indexType;   // BTREE o BST
+    std::string indexType;
 };
 
 // resultado de ejecutar una sentencia sql

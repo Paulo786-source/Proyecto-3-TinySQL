@@ -320,10 +320,10 @@ QueryResult QueryProcessor::executeUpdate(const ASTNode& node,
         }
     }
     else {
-        // sin indice: requiere readAllRecordsWithOffsets() de persona b
-        r.error = "UPDATE sin indice en la columna WHERE requiere "
-            "readAllRecordsWithOffsets() de Persona B";
-        return r;
+        // sin indice: busqueda secuencial con offsets
+        for (auto& [off, row] : sdm_.readAllRecordsWithOffsets(db, node.table))
+            if (!node.hasWhere || RowUtils::matchesWhere(row, node.where, schema))
+                targets.push_back({ off, row });
     }
 
     // aplica los cambios a cada fila encontrada
@@ -401,10 +401,10 @@ QueryResult QueryProcessor::executeDelete(const ASTNode& node,
         }
     }
     else {
-        // sin indice: requiere readAllRecordsWithOffsets() de persona b
-        r.error = "DELETE sin indice en la columna WHERE requiere "
-            "readAllRecordsWithOffsets() de Persona B";
-        return r;
+        // sin indice: busqueda secuencial con offsets
+        for (auto& [off, row] : sdm_.readAllRecordsWithOffsets(db, node.table))
+            if (!node.hasWhere || RowUtils::matchesWhere(row, node.where, schema))
+                targets.push_back({ off, row });
     }
 
     // elimina cada fila encontrada
