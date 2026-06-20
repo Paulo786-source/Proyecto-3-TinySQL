@@ -461,6 +461,21 @@ QueryResult QueryProcessor::executeCreateIndex(const ASTNode& node,
     // agrega el indice al IndexManager en memoria
     indexMgr_.add(db, node.table, node.indexColumn, std::move(handle));
 
+    // carga los registros existentes en el indice
+    IndexHandle* idx = indexMgr_.get(db, node.table, node.indexColumn);
+    if (idx) {
+        int colPos = -1;
+        for (int i = 0; i < static_cast<int>(schema.size()); ++i)
+            if (toLowerQP(schema[i].name) == toLowerQP(node.indexColumn)) {
+                colPos = i; break;
+            }
+        if (colPos >= 0) {
+            for (auto& [off, row] : sdm_.readAllRecordsWithOffsets(db, node.table))
+                if (colPos < static_cast<int>(row.size()))
+                    idx->insert(row[colPos], off);
+        }
+    }
+
     r.success = true;
     return r;
 }
@@ -480,5 +495,21 @@ void QueryProcessor::loadIndexes() {
             }
         indexMgr_.add(def.database, def.tableName, def.columnName,
             makeIndexHandle(def.type, colType));
+
+        // recarga los registros existentes en el indice
+        IndexHandle* idx = indexMgr_.get(def.database, def.tableName, def.columnName);
+        if (idx) {
+            int colPos = -1;
+            for (int i = 0; i < static_cast<int>(schema.size()); ++i)
+                if (toLowerQP(schema[i].name) == toLowerQP(def.columnName)) {
+                    colPos = i; break;
+                }
+            if (colPos >= 0) {
+                for (auto& [off, row] : sdm_.readAllRecordsWithOffsets(
+                    def.database, def.tableName))
+                    if (colPos < static_cast<int>(row.size()))
+                        idx->insert(row[colPos], off);
+            }
+        }
     }
 }
