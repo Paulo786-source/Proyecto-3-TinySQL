@@ -242,11 +242,18 @@ long long StoredDataManager::appendRecord(const std::string& dbName,
     if (cols.empty()) return -1;
 
     std::string path = tablePath(dbName, tableName);
+
+    // calcula el offset real usando el tamaño actual del archivo
+    // ios::app en Windows no reporta correctamente el offset con tellp()
+    long long offset = 0;
+    {
+        std::ifstream sizeCheck(path, std::ios::binary | std::ios::ate);
+        if (!sizeCheck.is_open()) return -1;
+        offset = static_cast<long long>(sizeCheck.tellg());
+    }
+
     std::ofstream file(path, std::ios::binary | std::ios::app);
     if (!file.is_open()) return -1;
-
-    // guarda el offset antes de escribir (posicion actual = fin del archivo)
-    long long offset = static_cast<long long>(file.tellp());
 
     // construye el buffer: [alive(1 byte)] [campo1] [campo2] ... [campoN]
     int recSize = recordByteSize(cols);
@@ -274,7 +281,6 @@ long long StoredDataManager::appendRecord(const std::string& dbName,
             std::memcpy(&buf[pos], &v, sizeof(double));
         }
         else {
-            // VARCHAR: copia los caracteres, rellena con ceros hasta fieldSize
             std::memset(&buf[pos], 0, fieldSize);
             std::strncpy(&buf[pos], val.c_str(), fieldSize - 1);
         }
