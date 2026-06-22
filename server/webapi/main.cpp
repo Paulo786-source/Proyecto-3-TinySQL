@@ -24,17 +24,23 @@ int main() {
     StoredDataManager sdm;
     QueryProcessor qp(sdm);
 
+    // reconstruye en memoria todos los indices que quedaron
+    // registrados en el catalogo de sesiones anteriores.
+    // sin esta llamada, los indices se pierden al reiniciar
+    // el servidor aunque el catalogo los tenga guardados.
+    qp.loadIndexes();
+
     httplib::Server server;
 
     // POST /query — recibe { sql, db_context }, ejecuta y retorna QueryResult
     server.Post("/query", [&qp](const httplib::Request& req, httplib::Response& res) {
         res.set_header("Access-Control-Allow-Origin", "*");
 
-        // parsea el body json; false = no lanzar excepción si está malformado
+        // parsea el body json; false = no lanzar excepcion si esta malformado
         auto body = json::parse(req.body, nullptr, false);
         if (body.is_discarded()) {
             QueryResult err;
-            err.error = "request JSON inválido";
+            err.error = "request JSON invalido";
             err.success = false;
             err.time_ms = 0;
             res.set_content(buildJsonResponse(err), "application/json");
@@ -48,7 +54,6 @@ int main() {
         auto start = std::chrono::steady_clock::now();
         QueryResult result = qp.execute(sql, dbContext);
         auto end = std::chrono::steady_clock::now();
-
         result.time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
         res.set_content(buildJsonResponse(result), "application/json");
@@ -64,6 +69,5 @@ int main() {
 
     std::cout << "TinySQLDb server corriendo en http://localhost:" << SERVER_PORT << std::endl;
     server.listen("localhost", SERVER_PORT);
-
     return 0;
 }

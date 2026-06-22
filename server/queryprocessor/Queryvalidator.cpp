@@ -215,7 +215,7 @@ std::string QueryValidator::validateCreateIndex(const ASTNode& node,
     if (auto e = requireDbExists(db);  !e.empty()) return e;
     if (auto e = requireTableExists(db, node.table); !e.empty()) return e;
 
-    // solo un indice por tabla 
+    // solo un indice por tabla
     if (indexMgr_.hasAnyIndex(db, node.table))
         return "la tabla '" + node.table +
         "' ya tiene un indice. Solo se permite uno por tabla";
@@ -223,5 +223,30 @@ std::string QueryValidator::validateCreateIndex(const ASTNode& node,
     auto schema = sdm_.getTableSchema(db, node.table);
     if (!columnExists(node.indexColumn, schema))
         return "columna '" + node.indexColumn + "' no existe en '" + node.table + "'";
+
+    // verifica que no haya valores duplicados en la columna indexada
+    // antes de construir el arbol. el enunciado lo exige explicitamente.
+    int colPos = -1;
+    for (int i = 0; i < static_cast<int>(schema.size()); ++i) {
+        if (toLowerV(schema[i].name) == toLowerV(node.indexColumn)) {
+            colPos = i; break;
+        }
+    }
+
+    if (colPos >= 0) {
+        std::set<std::string> seen;
+        for (auto& [off, row] : sdm_.readAllRecordsWithOffsets(db, node.table)) {
+            if (colPos < static_cast<int>(row.size())) {
+                const std::string& val = row[colPos];
+                if (seen.count(val)) {
+                    return "no se puede crear el indice: la columna '" +
+                        node.indexColumn + "' tiene valores duplicados ('" +
+                        val + "' aparece mas de una vez)";
+                }
+                seen.insert(val);
+            }
+        }
+    }
+
     return "";
 }

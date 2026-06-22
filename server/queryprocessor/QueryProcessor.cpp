@@ -453,6 +453,7 @@ QueryResult QueryProcessor::executeCreateIndex(const ASTNode& node,
     def.columnName = node.indexColumn;
     def.type = node.indexType;
     def.database = db;
+
     if (!sdm_.addIndex(def)) {
         r.error = "no se pudo registrar el indice en el catalogo";
         return r;
@@ -461,7 +462,10 @@ QueryResult QueryProcessor::executeCreateIndex(const ASTNode& node,
     // agrega el indice al IndexManager en memoria
     indexMgr_.add(db, node.table, node.indexColumn, std::move(handle));
 
-    // carga los registros existentes en el indice
+    // carga los registros existentes en el indice.
+    // el validador ya garantizo que no hay duplicados,
+    // pero si ocurriera uno inesperado se captura aqui
+    // para no crashear el servidor.
     IndexHandle* idx = indexMgr_.get(db, node.table, node.indexColumn);
     if (idx) {
         int colPos = -1;
@@ -469,10 +473,22 @@ QueryResult QueryProcessor::executeCreateIndex(const ASTNode& node,
             if (toLowerQP(schema[i].name) == toLowerQP(node.indexColumn)) {
                 colPos = i; break;
             }
+
         if (colPos >= 0) {
-            for (auto& [off, row] : sdm_.readAllRecordsWithOffsets(db, node.table))
-                if (colPos < static_cast<int>(row.size()))
-                    idx->insert(row[colPos], off);
+            for (auto& [off, row] : sdm_.readAllRecordsWithOffsets(db, node.table)) {
+                if (colPos < static_cast<int>(row.size())) {
+                    try {
+                        idx->insert(row[colPos], off);
+                    }
+                    catch (const std::exception& e) {
+                        // revierte: remueve el indice del catalogo y de memoria
+                        sdm_.removeIndex(db, node.table);
+                        indexMgr_.remove(db, node.table, node.indexColumn);
+                        r.error = std::string("error al poblar el indice: ") + e.what();
+                        return r;
+                    }
+                }
+            }
         }
     }
 
