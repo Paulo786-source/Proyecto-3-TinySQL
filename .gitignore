@@ -67,3 +67,12 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Visual Studio
+.vs/
+*.sqlite
+*.json
+
+# Node
+node_modules/
+client/node_modules/
